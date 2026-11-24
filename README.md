@@ -1,6 +1,6 @@
 # GEL: Guard, Eval, Loop
 
-GEL is a GitHub Action and a command line tool that runs 24 checks (guards) on every pull request, to catch what AI coding agents and tired people ship by mistake: a leaked key, an unpinned action, a workflow with an open token, a PR that says "all tests pass" while a check is red, an edited migration, a breaking API change.
+GEL is a GitHub Action and a command line tool that runs 33 checks (guards) on every pull request, to catch what AI coding agents and tired people ship by mistake: a leaked key, an unpinned action, a workflow with an open token, a PR that says "all tests pass" while a check is red, an edited migration, a breaking API change.
 
 It is plain Node with no dependencies, no model and no network. It starts in report mode, so nothing blocks until you promote a guard. This repo scans in about 0.1 s.
 
@@ -81,13 +81,20 @@ Planted defects are ones the bench inserted itself, so "caught" measures recall 
 | `release-integrity` | a release has a non-SemVer tag, no CHANGELOG entry, a red check or assets without checksums |
 | `repo-health` | the repo has no LICENSE, SECURITY.md, CONTRIBUTING.md or CODEOWNERS |
 | `dependabot-config` | an ecosystem in use is not covered by Dependabot or Renovate |
+| `gitattributes-eol` | a `.gitattributes` line-ending rule has no `eol=lf` as its only eol setting (the Claude plugin directory refuses the repo) |
+| `sonar-patterns` | a bash script tests with `[ ]` instead of `[[ ]]`, or a non-test `.ts` file has a backtracking-prone regex (the two SonarCloud findings that keep coming back). Existing hits are frozen in `docs/gel.json` under `sonar_patterns.baseline` (file to count); a file may only get cleaner |
+| `checks-green`, `deploy-delivered` | another check on the commit is red or says it is misconfigured (a SonarCloud project that does not exist), or a deploy workflow ends green and deployed nothing because a secret is unset |
+| `change-verified`, `perf-budget` | opt-in: the project's own build or tests fail on the PR, no test notices the change (the tests still pass with it reverted), or a named benchmark is slower than its committed baseline. `gel verify` and `gel perf` run the commands |
+| `install-ignore-scripts`, `curl-https-only`, `log-injection`, `workflow-checkout-safety` | the SonarCloud security findings that keep coming back in CI config: an install without `--ignore-scripts` or an unpinned `npx` (S6505, S8543), `curl` without `--proto '=https'` (S6506), a log line carrying `error.message` or request data with its line breaks (S5145, heuristic), a `workflow_run` / `pull_request_target` checkout that keeps the token or takes the PR head (S7631). Each takes a frozen `baseline` in `docs/gel.json` |
 | `adr-required`, `status-declared`, `north-star`, `product-brief` | opt-in: you declare a rule or a number in `docs/gel.json`, and GEL checks it |
+| `cta-label` | the first button under a landing page's headline is a bare "Sign in" or "Learn more" (or over 6 words) instead of saying what the visitor gets and that it is free |
+| `next-cta` | a landing page does not mark its one most likely next action: no element, or more than one, has `data-next-cta`, it lacks the `next-cta` class, it is not the first link, button or input under the `<h1>`, or the page has no spinning-border CSS with a reduced-motion fallback ([recipe](docs/next-cta.css)) |
 | `five-second-test`, `input-in-viewport`, `agent-readiness`, `ice-score`, `click-map` | a landing page, a phone input, agent-discovery files, an ICE table or a measured click map does not hold up |
 | `queue-merge-group-parity`, `queue-cost-budget`, `queue-main-duplicates`, `queue-required-satisfiable` | a merge queue would stall: a required check with no `merge_group` trigger, a shared concurrency group, a matrix over budget, a duplicate run on main, a ruleset rule nothing can satisfy. `gel queue-ready` scores all twelve items: [docs/queue.md](docs/queue.md) |
 
 `gel grade` grades `click-map`, `ice-score` and `product-brief` as bad, passed, good, high or super high. [`e2e/README.md`](e2e/README.md) gives the thresholds and shows which grades have a real example.
 
-The exact rules, options and edge cases for all 28 guards are in [docs/guards.md](docs/guards.md). `migrations-append-only`, `api-contract`, `tests-with-change`, `adr-required` and `stale-base` compare a PR with its base, so a push scan passes them.
+The exact rules, options and edge cases for all 34 guards are in [docs/guards.md](docs/guards.md). `migrations-append-only`, `api-contract`, `tests-with-change`, `adr-required` and `stale-base` compare a PR with its base, so a push scan passes them.
 
 ## Configure
 
@@ -105,6 +112,20 @@ Optional. GEL runs on any repo without a config file, with every guard in `repor
 - `report` writes findings and never fails the job. `block` fails it. Promote a guard once its run records show it was right.
 - `trusted_owners` may use their actions by tag. Your own org is always trusted.
 - A top-level `"mode": "report"` keeps every guard advisory, whatever the per-guard level says.
+- A top-level `"mode": "block"` is the level of every guard the file does not list, so a guard added in a later GEL version blocks too. List a guard as `report` or `off` to opt it out.
+
+### The level does not make GEL find more
+
+`report` or `block` only decides what happens to a finding: `block` fails the job, `report` does not. It never changes what GEL looks for. A guard finds only the thing it checks, so a green GEL means "none of the guards found their thing", not "this pull request is correct".
+
+What GEL does not find, even with every guard on `block`:
+
+- Whether the change is right. It does not run your code, so a logic bug or a slowdown passes. `tests-with-change` only asks that a test file changed, not that a test covers the change.
+- Whether another check is red or misconfigured. A failing SonarCloud check, or a Sonar project that does not exist, is not a GEL finding. `sonar-patterns` only scans the code for risky regex shapes.
+- Whether a deploy really deployed. A workflow that skips because a secret is unset still ends green.
+- Whether the numbers in `docs/brief.json` or the north-star file are true. GEL checks that they exist and are recent.
+
+Treat `block` as "a known hygiene or safety rule is enforced", and keep your tests, build and other required checks for correctness.
 
 Each run appends one JSON line to `gel-record.jsonl`: repo, commit, lane, each guard's result, its first 10 findings and the time. That record is how you decide to promote a guard.
 
@@ -129,7 +150,7 @@ Each guard has `guards/<name>/cases.json`, labelled good and bad. `node bin/gel.
 ## What GEL does not do
 
 - It does not replace a code scanner, dependency review or a test suite. It checks the repo and PR facts those tools do not look at.
-- It reads files and PR metadata. It does not run your code, and it cannot judge whether a change is correct.
+- It reads files and PR metadata. The guards themselves never run your code, and GEL cannot judge whether a change is correct in general. The opt-in `gel verify` and `gel perf` steps do run the build, the tests and the benchmark you name in `docs/gel.json`, and `change-verified` then asks the one question a machine can answer: do the tests notice this change.
 - It never promotes a guard to `block` on its own. A person edits `docs/gel.json`, and that edit is lane C.
 - The five-second and phone-input guards read a committed browser measurement, because layout cannot be read from source.
 

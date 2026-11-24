@@ -18,15 +18,20 @@ import { EVAL_NAMES, runEval, ratchet, evalSelftest, readJson } from "../lib/eva
 import { meta, metaMarkdown, metaSelftest } from "../lib/meta.mjs";
 import { collectRuns } from "../evals/ci-reliability/collect.mjs";
 import { fixPinned, lsRemoteResolver } from "../lib/fix-pinned.mjs";
+import { fixSonar, collectHits } from "../lib/fix-sonar.mjs";
 import { collectRelease } from "../lib/release-ctx.mjs";
+import { collectHistory } from "../lib/history.mjs";
 import { run as northStar, ratioOf } from "../guards/north-star/index.mjs";
 import { measure as measureInput } from "../lib/input-viewport.mjs";
+import { measure as measureWorkers } from "../lib/worker-usage.mjs";
 import { run as productBrief, briefRows } from "../guards/product-brief/index.mjs";
 import { judge as judgeClicks, limits as clickLimits } from "../guards/click-map/index.mjs";
 import { measure as measureClicks } from "../lib/click-map.mjs";
 import { gradeRepo } from "../lib/grades.mjs";
+import { plan as initPlan, apply as initApply } from "../lib/init.mjs";
 import { scorecard, scorecardMarkdown } from "../lib/queue.mjs";
 import { collectQueue } from "../lib/queue-collect.mjs";
+import { verify, perf, mergeCtx } from "../lib/verify.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -39,7 +44,7 @@ function changedFiles(root, base) {
   } catch { return null; }
 }
 
-// every guard over the whole tree: { guard: { count, findings } } (the flywheel's before/after score)
+// every guard over the whole tree: { guard: { count, findings } } (the autofix's before/after score)
 async function scanTree(root) {
   const cfg = loadConfig(root);
   const files = walk(root).filter((f) => !matchAny(cfg.ignore, f));
@@ -53,9 +58,50 @@ async function scanTree(root) {
 }
 
 // gel fix <guard>: fix what the guard reports, then let the guards score the result
+// gel fix sonar-patterns: rewrite `[ ]` to `[[ ]]` and bare `.sort()` in up to --max-files files, then lower the frozen baseline
+async function fixSonarPatterns(root) {
+  const cfg = loadConfig(root);
+  const files = walk(root).filter((f) => !matchAny(cfg.ignore, f));
+  const limit = Number(opt("max-files", 15));
+  const hitFiles = files.map((f) => [f, collectHits(root, [f])]).filter(([, h]) => h.length).sort((a, b) => a[1].length - b[1].length || (a[0] < b[0] ? -1 : 1));
+  const picked = hitFiles.slice(0, limit);
+  const before = await scanTree(root);
+  const hitsBefore = picked.reduce((n, [, h]) => n + h.length, 0);
+  const res = fixSonar(root, picked.flatMap(([, h]) => h));
+  const hitsAfter = collectHits(root, picked.map(([f]) => f)).length;
+  // lower the baseline of the files that got cleaner; it never rises
+  const cfgPath = join(root, "docs/gel.json");
+  const raw = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : null;
+  const base = raw?.sonar_patterns?.baseline;
+  let lowered = 0;
+  if (base) {
+    for (const [f] of picked) {
+      if (!(f in base)) continue;
+      const now = collectHits(root, [f]).length;
+      if (now < base[f]) { if (now === 0) delete base[f]; else base[f] = now; lowered++; }
+    }
+    if (lowered) { writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n"); res.files.push("docs/gel.json"); }
+  }
+  const after = await scanTree(root);
+  const counts = (s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.count]));
+  const worse = Object.keys(after).filter((k) => after[k].count > (before[k]?.count ?? 0));
+  const outside = res.files.filter((f) => f !== "docs/gel.json" && !/\.(sh|bash|[cm]?js|ts)$/.test(f) && /\.[^/]*$/.test(f.slice(f.lastIndexOf("/") + 1)));
+  const better = hitsAfter < hitsBefore && !worse.length && !outside.length;
+  const b = counts(before), a = counts(after);
+  b["sonar-patterns"] = hitsBefore; a["sonar-patterns"] = hitsAfter;
+  const report = { fixer: "sonar-patterns", better, before: b, after: a, worse, outside, files: res.files, pinned: res.fixed, fixed: res.fixed, lowered, unresolved: res.unresolved };
+  if (args.includes("--json")) console.log(JSON.stringify(report));
+  else {
+    console.log(`sonar-patterns: ${hitsBefore} -> ${hitsAfter} hits in ${picked.length} files, ${res.fixed} fixed, baseline lowered for ${lowered}${better ? "" : " (not better: do not open a PR)"}`);
+    for (const u of res.unresolved) console.log(`left ${u.file}:${u.line} ${u.why}`);
+  }
+  process.exit(better ? 0 : 1);
+}
+
 async function fix() {
   const what = args[1];
-  if (what !== "pinned-actions") { console.log("usage: gel fix pinned-actions [--root .] [--repo owner/name] [--json]"); process.exit(2); }
+  if (what !== "pinned-actions" && what !== "sonar-patterns") { console.log("usage: gel fix pinned-actions|sonar-patterns [--root .] [--repo owner/name] [--max-files 15] [--json]"); process.exit(2); }
+  if (what === "sonar-patterns") return fixSonarPatterns(resolve(opt("root", ".")));
   const root = resolve(opt("root", "."));
   // the repo's own owner is trusted (its actions may stay on a tag), as in CI, so the fixer needs to know the repo
   if (!process.env.GITHUB_REPOSITORY) {
@@ -93,6 +139,34 @@ async function main() {
       for (const w of r.wrong) console.log(`       ${w}`);
     }
     process.exit(rows.every((r) => r.ok) ? 0 : 1);
+  }
+  if (cmd === "verify" || cmd === "perf") {
+    // gel verify | gel perf [--root .] [--base <sha>] [--ctx ctx.json] [--update-baseline]: run the project's own build, tests
+    // (and a revert check) or its named benchmark, and put the result in the ctx file for change-verified / perf-budget
+    const root = resolve(opt("root", "."));
+    const cfg = loadConfig(root);
+    const ctxFile = opt("ctx");
+    const log = (m) => console.error(m);
+    if (cmd === "verify") {
+      if (!cfg.verify) { console.log('gel verify: no "verify" in docs/gel.json (install, build, test), nothing to run'); process.exit(0); }
+      const r = verify({ root, cfg, base: opt("base"), log });
+      if (ctxFile) mergeCtx(ctxFile, "verify", r);
+      console.log(JSON.stringify(r, null, 1));
+      process.exit(0);
+    }
+    if (!cfg.perf_budget?.command) { console.log('gel perf: no "perf_budget.command" in docs/gel.json, nothing to run'); process.exit(0); }
+    const r = perf({ root, cfg, log });
+    if (args.includes("--update-baseline")) {
+      if (r.value === null) { console.log(`gel perf: the benchmark gave no number (exit ${r.exit}): ${r.tail}`); process.exit(1); }
+      const file = join(root, cfg.perf_budget.baseline ?? "bench/perf-baseline.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ value: r.value, unit: r.unit, measuredAt: new Date().toISOString(), command: r.command }, null, 2) + "\n");
+      console.log(`gel perf: baseline ${r.value}${r.unit ?? ""} written to ${file}`);
+      process.exit(0);
+    }
+    if (ctxFile) mergeCtx(ctxFile, "perf", r);
+    console.log(JSON.stringify(r, null, 1));
+    process.exit(0);
   }
   if (cmd === "factory") {
     // gel factory (<prs.json> | --repo owner/name [--limit 100]) [--json]: touch points and lead time per merged PR (north star of the factory)
@@ -296,6 +370,19 @@ async function main() {
     }
     process.exit(v.problems.length ? 1 : 0);
   }
+  if (cmd === "worker-usage") {
+    // gel worker-usage --account <id> [--day 1] [--limit 100000] [--tool-calls citable=100,flisk-tools=40] [--write bench/worker-usage.json] [--json]
+    // Requests per Worker script for one UTC day (default yesterday) from Cloudflare analytics. Exit 1 when one script or the account crosses the free-plan budget.
+    if (!opt("account")) { console.log("usage: gel worker-usage --account <id> [--day 1] [--limit 100000] [--tool-calls script=n,..] [--write bench/worker-usage.json] [--json] (CLOUDFLARE_API_TOKEN)"); process.exit(2); }
+    const toolCalls = Object.fromEntries((opt("tool-calls", "") || "").split(",").filter(Boolean).map((p) => { const [k, v] = p.split("="); return [k, Number(v)]; }));
+    let result;
+    try { result = await measureWorkers({ account: opt("account"), dayOffset: Number(opt("day", "1")), dailyLimit: Number(opt("limit", "100000")), toolCalls }); } catch (e) { console.error(`gel worker-usage: ${e.message}`); process.exit(2); }
+    if (opt("write")) writeFileSync(resolve(opt("write")), JSON.stringify(result, null, 1) + "\n");
+    const total = result.scripts.reduce((a, s) => a + s.requests, 0);
+    if (args.includes("--json")) console.log(JSON.stringify({ ...result, total }));
+    else { console.log(`${result.day}: ${total} of ${result.dailyLimit} requests`); for (const s of result.scripts.slice(0, 10)) console.log(`  ${String(s.requests).padStart(7)}  ${s.script}${s.toolCalls != null ? `  (${s.toolCalls} tool calls)` : ""}`); }
+    process.exit(result.scripts.some((s) => s.requests / result.dailyLimit > 0.25) || total / result.dailyLimit > 0.6 ? 1 : 0);
+  }
   if (cmd === "five-second") {
     // gel five-second (--url https://site | --file index.html) [--size 375x812] [--merge] [--write bench/five-second.json] [--json]
     const target = opt("url") ?? opt("file");
@@ -309,6 +396,27 @@ async function main() {
     if (args.includes("--json") || !out) console.log(JSON.stringify(doc, null, 2));
     else console.log(`five-second: ${e.html ? "first screen kept" : "NO visible <h1> drawn"}${e.covered ? `, the headline is covered by ${e.covered}` : ""} for ${e.page} -> ${out}`);
     process.exit(e.html && !e.covered ? 0 : 1);
+  }
+  if (cmd === "init") {
+    // gel init [--root .] [--mode block|report] [--strict] [--force] [--dry-run]: add GEL to a repo (caller workflow +
+    // docs/gel.json, every guard "block") and scan it at once. Exits 1 when a blocking guard already finds something.
+    const root = resolve(opt("root", "."));
+    const files = initPlan(root, { mode: opt("mode", "block"), strict: args.includes("--strict") });
+    const done = args.includes("--dry-run") ? files.map((f) => ({ path: f.path, action: f.exists && !args.includes("--force") ? "would keep" : "would write" })) : initApply(root, files, { force: args.includes("--force") });
+    for (const d of done) console.log(`${d.action.padEnd(10)} ${d.path}`);
+    if (args.includes("--dry-run")) process.exit(0);
+    const scan = await scanTree(root);
+    const cfg = loadConfig(root);
+    let blocking = 0;
+    for (const [g, r] of Object.entries(scan)) {
+      if (!r.count) continue;
+      const level = cfg.guards[g];
+      if (level === "block") blocking += r.count;
+      console.log(`${level === "block" ? "BLOCK" : "report"}  ${g}: ${r.count}`);
+      for (const f of r.findings.slice(0, 10)) console.log(`   ${f.file}${f.line ? `:${f.line}` : ""} ${f.message}`);
+    }
+    console.log(blocking ? `\ngel init: ${blocking} blocking finding(s). CI will fail until they are fixed.` : "\ngel init: clean. Every guard passes.");
+    process.exit(blocking ? 1 : 0);
   }
   if (cmd === "queue-ready") {
     // gel queue-ready [--root .] [--repo o/n | --snapshot queue.json] [--json]: one preflight score before a merge queue (or a
@@ -330,7 +438,7 @@ async function main() {
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, [`lane=${plan.lane}`, `lane_reason=${plan.reason}`, `scripts=${plan.scripts.join(" ")}`, `python_tests=${plan.pythonTests}`, `codeql=${plan.codeql}`].join("\n") + "\n");
     process.exit(0);
   }
-  if (cmd !== "run") { console.log("usage: gel queue-ready [--root .] [--repo o/n | --snapshot queue.json] [--json] | gel five-second (--url u | --file f) [--write f] | gel click-map (--url u | --file f) [--merge] [--write f] | gel input-viewport (--url u | --file f) [--size WxH,..] [--write f] | gel north-star [--root .] [--measure] [--json] | gel brief [--root .] [--json] | gel lane [--root .] [--base <sha>] [--min A|B|C] [--json] | gel run [--root .] [--base <sha>] [--ctx ctx.json] [--record gel-record.jsonl] | gel selftest [--json] | gel factory (<prs.json> | --repo o/n [--limit 100]) [--json] | gel promote <gel-record.jsonl ...> [--labels f] [--root .] [--write] [--json] | gel metrics <gel-record.jsonl ...> [--labels gel-labels.json] [--json] | gel eval [selftest|collect --repo o/n] [--only a,b] [--runs runs.json] [--baseline b.json] [--record f] [--strict] [--json] | gel meta <gel-record.jsonl ...> [--evals f] [--outcomes f] | gel meta selftest | gel fix pinned-actions [--root .] [--repo owner/name] [--json] | gel release-ctx --repo owner/name --tag v1.2.3 [--sha s] [--phase pre|post]"); process.exit(2); }
+  if (cmd !== "run") { console.log("usage: gel init [--root .] [--mode block|report] [--strict] [--force] [--dry-run] | gel queue-ready [--root .] [--repo o/n | --snapshot queue.json] [--json] | gel five-second (--url u | --file f) [--write f] | gel click-map (--url u | --file f) [--merge] [--write f] | gel input-viewport (--url u | --file f) [--size WxH,..] [--write f] | gel worker-usage --account id [--day 1] [--tool-calls s=n,..] [--write f] | gel north-star [--root .] [--measure] [--json] | gel brief [--root .] [--json] | gel lane [--root .] [--base <sha>] [--min A|B|C] [--json] | gel verify [--root .] [--base <sha>] [--ctx ctx.json] | gel perf [--root .] [--ctx ctx.json] [--update-baseline] | gel run [--root .] [--base <sha>] [--ctx ctx.json] [--record gel-record.jsonl] | gel selftest [--json] | gel factory (<prs.json> | --repo o/n [--limit 100]) [--json] | gel promote <gel-record.jsonl ...> [--labels f] [--root .] [--write] [--json] | gel metrics <gel-record.jsonl ...> [--labels gel-labels.json] [--json] | gel eval [selftest|collect --repo o/n] [--only a,b] [--runs runs.json] [--baseline b.json] [--record f] [--strict] [--json] | gel meta <gel-record.jsonl ...> [--evals f] [--outcomes f] | gel meta selftest | gel fix pinned-actions|sonar-patterns [--root .] [--repo owner/name] [--max-files 15] [--json] | gel release-ctx --repo owner/name --tag v1.2.3 [--sha s] [--phase pre|post]"); process.exit(2); }
 
   const root = resolve(opt("root", "."));
   const cfg = loadConfig(root);
@@ -344,6 +452,9 @@ async function main() {
   const readBase = changes ? baseReader(root, opt("base")) : null;
   // stale-base: what the base branch changed since this branch forked (pull requests only; a push scan has no base)
   if (changed && ctx.baseMoved === undefined) { const moved = movedOnBase(root, opt("base")); if (moved) ctx.baseMoved = moved; }
+
+  // risk-history reads what git remembers about the files this pull request changes (pull requests only)
+  if (changes && cfg.guards["risk-history"] !== "off" && ctx.history === undefined) ctx.history = collectHistory(root);
 
   const started = Date.now();
   const results = [];
