@@ -71,6 +71,7 @@ Planted defects are ones the bench inserted itself, so "caught" measures recall 
 | `workflow-permissions` | a job has no `permissions`, uses `write-all`, or checks out a fork's code under `pull_request_target` |
 | `workflow-timeouts` | a workflow job that runs steps has no `timeout-minutes`, so a hang runs for GitHub's 360-minute default |
 | `frozen-install` | a workflow installs without a frozen form (`npm ci`, `--frozen-lockfile`), or `package.json` has no lockfile |
+| `model-deprecation` | source code hardcodes an AI model id (`@cf/...`, `gpt-...`, `claude-...`, `gemini-...`) that a provider has retired or will retire within 30 days |
 | `public-env-secrets` | a secret-named variable has a browser-bundled prefix (`VITE_`, `NEXT_PUBLIC_`, and others) |
 | `dead-links` | a markdown or HTML link points to a file that is not in the repo |
 | `done-without-green` | a PR says "all checks pass" while a check on its last commit is red |

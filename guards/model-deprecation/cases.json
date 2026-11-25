@@ -1,0 +1,86 @@
+[
+  {
+    "name": "deprecated Cloudflare Workers AI model in TypeScript file",
+    "label": "bad",
+    "files": {
+      "src/ai.ts": "export const DEFAULT_MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';\n"
+    }
+  },
+  {
+    "name": "retired OpenAI model in config file",
+    "label": "bad",
+    "files": {
+      "config.json": "{\n  \"model\": \"gpt-3.5-turbo\"\n}\n"
+    }
+  },
+  {
+    "name": "retired Anthropic model in python file",
+    "label": "bad",
+    "files": {
+      "service.py": "client.messages.create(model='claude-2', prompt='hello')\n"
+    }
+  },
+  {
+    "name": "retired Claude Instant model",
+    "label": "bad",
+    "files": {
+      "worker.js": "const m = 'claude-instant-1.2';\n"
+    }
+  },
+  {
+    "name": "retired Gemini model in yaml",
+    "label": "bad",
+    "files": {
+      "deploy.yml": "env:\n  MODEL_NAME: gemini-1.0-pro\n"
+    }
+  },
+  {
+    "name": "retired Workers AI MeloTTS model",
+    "label": "bad",
+    "files": {
+      "src/voice.ts": "const TTS_MODEL = '@cf/myshell-ai/melotts';\n"
+    }
+  },
+  {
+    "name": "current active models pass",
+    "label": "good",
+    "files": {
+      "src/ai.ts": "export const M = '@cf/mistralai/mistral-small-3.1-24b-instruct';\nconst O = 'gpt-4o-mini';\nconst C = 'claude-3-5-sonnet-20241022';\nconst G = 'gemini-1.5-flash';\n"
+    }
+  },
+  {
+    "name": "model mentioned in markdown is skipped",
+    "label": "good",
+    "files": {
+      "README.md": "We migrated away from gpt-3.5-turbo and claude-2.\nUse @cf/meta/llama-3.1-8b-instruct-fast as a case study.\n"
+    }
+  },
+  {
+    "name": "model in test file is skipped",
+    "label": "good",
+    "files": {
+      "tests/model.test.ts": "test('legacy model fallback', () => {\n  assert.equal(fallbackModel('gpt-3.5-turbo'), 'gpt-4o-mini');\n});\n"
+    }
+  },
+  {
+    "name": "model in fixture file is skipped",
+    "label": "good",
+    "files": {
+      "fixtures/legacy.json": "{\"model\": \"claude-2\"}\n"
+    }
+  },
+  {
+    "name": "prefix or substring match does not trigger false positive",
+    "label": "good",
+    "files": {
+      "src/models.ts": "const custom1 = 'my-gpt-3.5-turbo-wrapper';\nconst custom2 = 'claude-2-custom-finetune';\n"
+    }
+  },
+  {
+    "name": "non-model text with similar words passes",
+    "label": "good",
+    "files": {
+      "src/utils.ts": "const prompt = 'Discuss claude and gpt architectures';\n"
+    }
+  }
+]

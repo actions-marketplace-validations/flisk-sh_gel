@@ -1,0 +1,116 @@
+[
+  {
+    "id": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "provider": "Cloudflare",
+    "retireOn": "2026-11-18",
+    "replacement": "@cf/mistralai/mistral-small-3.1-24b-instruct"
+  },
+  {
+    "id": "@cf/meta/llama-3.1-8b-instruct-fp8",
+    "provider": "Cloudflare",
+    "retireOn": "2026-11-20",
+    "replacement": "@cf/mistralai/mistral-small-3.1-24b-instruct"
+  },
+  {
+    "id": "@cf/myshell-ai/melotts",
+    "provider": "Cloudflare",
+    "retireOn": "2026-10-15",
+    "replacement": "@cf/openai/whisper-large-v3-turbo"
+  },
+  {
+    "id": "@cf/baai/bge-small-en-v1.5",
+    "provider": "Cloudflare",
+    "retireOn": "2026-09-01",
+    "replacement": "@cf/baai/bge-base-en-v1.5"
+  },
+  {
+    "id": "gpt-3.5-turbo",
+    "provider": "OpenAI",
+    "retireOn": "2024-09-13",
+    "replacement": "gpt-4o-mini"
+  },
+  {
+    "id": "gpt-3.5-turbo-0613",
+    "provider": "OpenAI",
+    "retireOn": "2024-06-13",
+    "replacement": "gpt-4o-mini"
+  },
+  {
+    "id": "gpt-3.5-turbo-16k",
+    "provider": "OpenAI",
+    "retireOn": "2024-09-13",
+    "replacement": "gpt-4o-mini"
+  },
+  {
+    "id": "gpt-4-0314",
+    "provider": "OpenAI",
+    "retireOn": "2024-06-13",
+    "replacement": "gpt-4o"
+  },
+  {
+    "id": "gpt-4-0613",
+    "provider": "OpenAI",
+    "retireOn": "2025-06-06",
+    "replacement": "gpt-4o"
+  },
+  {
+    "id": "claude-1",
+    "provider": "Anthropic",
+    "retireOn": "2024-01-01",
+    "replacement": "claude-3-5-sonnet-20241022"
+  },
+  {
+    "id": "claude-2",
+    "provider": "Anthropic",
+    "retireOn": "2024-06-01",
+    "replacement": "claude-3-5-sonnet-20241022"
+  },
+  {
+    "id": "claude-2.0",
+    "provider": "Anthropic",
+    "retireOn": "2024-06-01",
+    "replacement": "claude-3-5-sonnet-20241022"
+  },
+  {
+    "id": "claude-2.1",
+    "provider": "Anthropic",
+    "retireOn": "2024-11-01",
+    "replacement": "claude-3-5-sonnet-20241022"
+  },
+  {
+    "id": "claude-instant-1",
+    "provider": "Anthropic",
+    "retireOn": "2024-11-06",
+    "replacement": "claude-3-5-haiku-20241022"
+  },
+  {
+    "id": "claude-instant-1.2",
+    "provider": "Anthropic",
+    "retireOn": "2024-11-06",
+    "replacement": "claude-3-5-haiku-20241022"
+  },
+  {
+    "id": "gemini-1.0-pro",
+    "provider": "Google",
+    "retireOn": "2025-02-15",
+    "replacement": "gemini-1.5-flash"
+  },
+  {
+    "id": "gemini-1.0-ultra",
+    "provider": "Google",
+    "retireOn": "2025-02-15",
+    "replacement": "gemini-1.5-pro"
+  },
+  {
+    "id": "text-davinci-003",
+    "provider": "OpenAI",
+    "retireOn": "2024-01-04",
+    "replacement": "gpt-4o-mini"
+  },
+  {
+    "id": "text-embedding-ada-002",
+    "provider": "OpenAI",
+    "retireOn": "2026-06-01",
+    "replacement": "text-embedding-3-small"
+  }
+]
